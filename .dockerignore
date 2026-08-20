@@ -1,0 +1,20 @@
+# Build context hygiene: keep the image small and avoid busting layer caches.
+**/node_modules
+**/dist
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+
+# Never bake secrets into an image.
+.env
+**/.env
+**/.env.local
+
+.git
+.gitignore
+demo
+task.md
+README.md
+**/*.log
