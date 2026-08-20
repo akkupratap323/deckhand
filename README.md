@@ -256,9 +256,3 @@ See [deploy/README.md](deploy/README.md) for the full runbook and the reasoning 
 **Single instance.** Deck storage is the local filesystem and sessions are held in process, so this does not scale horizontally as written.
 
 **Speculative inference is not wired up.** Deepgram Flux emits an eager end of turn event before it confirms the turn. Starting the language model call at that point and discarding it if the user resumes would remove real latency. The event is logged today but not acted on.
-
----
-
-## What I would do next
-
-Retry transient provider failures before falling back. Act on the eager end of turn event to cut response latency. Move deck storage to object storage and sessions to a shared store so more than one instance can run. Add per IP rate limiting on upload and session creation. Cache the deck prompt across turns, since it is identical every time and currently re sent in full.
