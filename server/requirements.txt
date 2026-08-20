@@ -1,0 +1,19 @@
+# Verified against pipecat-ai 1.7.0 on 2026-08-19.
+# No [silero] extra on purpose: Flux owns turn detection, so the Silero VAD
+# analyzer is never constructed. (onnxruntime arrives via pipecat's base deps
+# regardless, so this buys correctness and clarity, not image size.)
+pipecat-ai[deepgram,deepseek,webrtc,cartesia,google]~=1.7.0
+fastapi~=0.141.1
+uvicorn[standard]~=0.52.3
+python-dotenv~=1.2.3
+loguru~=0.7.3
+
+# Deck ingestion: PDF text extraction and page rendering.
+PyMuPDF~=1.28.2
+# FastAPI needs this to parse multipart uploads.
+python-multipart~=0.0.20
+# Narration calls; pipecat already depends on httpx, pinned here as it is used directly.
+httpx~=0.28.1
+
+# Optional: AWS Bedrock vision narration. Only imported when BEDROCK_MODEL_ID is set.
+boto3~=1.35
