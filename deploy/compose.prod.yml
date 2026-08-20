@@ -1,0 +1,51 @@
+# Production compose for the EC2 host. Linux only, by design.
+#
+# `network_mode: host` is the whole point of this file. The default bridge
+# setup works locally because ICE is bidirectional - the browser's candidates
+# are routable from the container even though the container's are not routable
+# from the browser, so media flows through the NAT mapping the container opens.
+#
+# On EC2 that reasoning collapses: the browser is on the public internet and
+# has no route back to a 172.17.x.x candidate, and the instance itself sits
+# behind AWS's 1:1 NAT so even its own idea of its address is private. Host
+# networking puts aiortc on the real interface, and the STUN server configured
+# in main.py then discovers the public address and advertises it as a
+# server-reflexive candidate. That pair - host networking plus STUN - is what
+# makes audio work here.
+#
+# The app is deliberately NOT published to the internet directly. It listens on
+# 127.0.0.1 only; Caddy on the host terminates TLS and proxies to it. Browsers
+# refuse getUserMedia on an insecure origin, so a plain http:// deployment
+# would load the page and then fail to open the microphone.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voice-presentation-agent:latest
+    container_name: voice-presentation-agent
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      # Loopback only. Caddy is the only thing that should reach this.
+      HOST: 127.0.0.1
+      PORT: 7860
+    volumes:
+      - deck-data:/app/data
+    restart: unless-stopped
+    # A 1 GB host with an aggressive build can push the app into swap thrash.
+    # Capping it means the container dies cleanly and restarts rather than
+    # dragging the whole instance down with it.
+    mem_limit: 800m
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/api/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+volumes:
+  deck-data:

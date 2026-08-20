@@ -1,0 +1,67 @@
+# One service: FastAPI serves both the signalling API and the built frontend,
+# so there is a single origin and a single port.
+#
+# WebRTC and Docker networking ----------------------------------------------
+# Media does not travel over the published port. aiortc gathers ICE candidates
+# on the container's own address and binds them to ephemeral UDP ports it picks
+# itself; there is no way to pin those to a published range.
+#
+# It still connects, because ICE is bidirectional. The container's candidates
+# (172.x.x.x) are not routable from the browser, but the browser's candidates
+# (the host's LAN address) *are* routable from the container, so the container
+# reaches out, the NAT mapping opens, and media flows back through it.
+#
+# `network_mode: host` is the tidier answer on Linux and is available under the
+# `hostnet` profile below. Do not reach for it on Docker Desktop for Windows:
+# there the container lands in the WSL VM's namespace, and with WSL in its
+# default NAT mode the app is then unreachable from Windows entirely.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voice-presentation-agent:latest
+    container_name: voice-presentation-agent
+    ports:
+      - "${PORT:-7860}:7860"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      # Fixed inside the container; remap on the host side above.
+      PORT: 7860
+    volumes:
+      # Uploaded decks outlive the container.
+      - deck-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7860/api/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+  # Linux only. Skips the NAT hop entirely, so ICE has the fewest moving parts.
+  #
+  #   docker compose --profile hostnet up -d app-host
+  app-host:
+    profiles: ["hostnet"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: voice-presentation-agent:latest
+    container_name: voice-presentation-agent-host
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: ${PORT:-7860}
+    volumes:
+      - deck-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  deck-data:
