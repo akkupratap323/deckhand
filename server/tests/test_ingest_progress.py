@@ -230,3 +230,139 @@ async def test_failed_synthesis_still_leaves_a_ready_deck(temp_store, stub_narra
 
     assert deck.status == "ready"
     assert deck.phase == "done"
+
+
+# --- deleting a deck mid-ingest -------------------------------------------
+
+
+@pytest.fixture
+def fresh_deletes(monkeypatch):
+    monkeypatch.setattr(store, "_deleted", set())
+
+
+async def test_delete_during_narration_stops_the_ingest(
+    temp_store, stub_narration, fresh_deletes, monkeypatch
+):
+    """The deck stays gone, and the slides still queued are not narrated."""
+    narrated: list[int] = []
+    synthesized: list[bool] = []
+
+    class Model:
+        wants_image = False
+
+        async def narrate(self, *, text, slide_number, total, deck_title, image_png=None):
+            narrated.append(slide_number)
+            if slide_number == 1:
+                assert store.delete("x1") is True
+            return {"title": "T", "bullets": ["a"], "narration": "N.", "keywords": []}
+
+    async def fake_synthesis(**kwargs):
+        synthesized.append(True)
+        return {"intro": "", "outro": "", "persona": "", "transitions": {}}
+
+    monkeypatch.setattr(ingest, "build_narration_model", lambda: Model())
+    monkeypatch.setattr(ingest, "synthesize_deck", fake_synthesis)
+    monkeypatch.setattr(ingest, "CONCURRENCY", 1)
+
+    deck = Deck(id="x1", title="x", status="processing")
+    await store.save(deck)
+    await ingest.ingest_pdf(deck, _make_pdf(4))  # must not raise
+
+    assert store.get("x1") is None
+    assert not (temp_store / "decks" / "x1.json").exists()
+    assert not store.image_dir("x1").exists()
+    assert narrated == [1]
+    assert synthesized == []
+
+
+async def test_delete_during_rendering_stops_the_ingest(
+    temp_store, stub_narration, fresh_deletes, monkeypatch
+):
+    real_save = store.save
+    narrated: list[int] = []
+
+    async def spy(deck):
+        if deck.pages_rendered == 1 and not store.was_deleted(deck.id):
+            assert store.delete(deck.id) is True
+        await real_save(deck)
+
+    class Model:
+        wants_image = False
+
+        async def narrate(self, *, text, slide_number, total, deck_title, image_png=None):
+            narrated.append(slide_number)
+            return {"title": "T", "bullets": ["a"], "narration": "N.", "keywords": []}
+
+    monkeypatch.setattr(store, "save", spy)
+    monkeypatch.setattr(ingest, "build_narration_model", lambda: Model())
+
+    deck = Deck(id="x2", title="x", status="processing")
+    await real_save(deck)
+    await ingest.ingest_pdf(deck, _make_pdf(3))
+
+    assert store.get("x2") is None
+    assert not store.image_dir("x2").exists()
+    assert deck.pages_rendered == 1
+    assert narrated == []
+
+
+async def test_a_page_written_during_the_delete_is_cleaned_up(
+    temp_store, stub_narration, fresh_deletes, monkeypatch
+):
+    """The delete can miss a page the renderer finishes at the same moment."""
+    real_save = store.save
+
+    async def spy(deck):
+        if deck.pages_rendered == 1 and not store.was_deleted(deck.id):
+            assert store.delete(deck.id) is True
+            # Stands in for that page, landing after the delete's cleanup.
+            store.image_dir(deck.id).mkdir(parents=True, exist_ok=True)
+            store.image_path(deck.id, 2).write_bytes(b"\x89PNG")
+        await real_save(deck)
+
+    monkeypatch.setattr(store, "save", spy)
+
+    deck = Deck(id="x5", title="x", status="processing")
+    await real_save(deck)
+    await ingest.ingest_pdf(deck, _make_pdf(3))
+
+    assert store.get("x5") is None
+    assert not store.image_dir("x5").exists()
+
+
+async def test_delete_after_ready_keeps_the_deck_deleted(
+    temp_store, stub_narration, fresh_deletes, monkeypatch
+):
+    """Deleting a ready deck while synthesis runs must not undo the delete."""
+
+    async def deleting_synthesis(**kwargs):
+        assert store.delete("x3") is True
+        return {"intro": "Hi.", "outro": "", "persona": "", "transitions": {}}
+
+    monkeypatch.setattr(ingest, "synthesize_deck", deleting_synthesis)
+
+    deck = Deck(id="x3", title="x", status="processing")
+    await store.save(deck)
+    await ingest.ingest_pdf(deck, _make_pdf(2))
+
+    assert store.get("x3") is None
+    assert not store.image_dir("x3").exists()
+
+
+async def test_a_failure_after_delete_is_not_written_back(
+    temp_store, stub_narration, fresh_deletes, monkeypatch
+):
+    """The failure handlers save too; they must not recreate a deleted deck."""
+
+    async def failing_title(**kwargs):
+        store.delete("x4")
+        raise RuntimeError("title call failed")
+
+    monkeypatch.setattr(ingest, "title_for_deck", failing_title)
+
+    deck = Deck(id="x4", title="x", status="processing")
+    await store.save(deck)
+    await ingest.ingest_pdf(deck, _make_pdf(2))
+
+    assert store.get("x4") is None
+    assert not store.image_dir("x4").exists()

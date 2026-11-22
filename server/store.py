@@ -26,6 +26,20 @@ DECKS_DIR = DATA_DIR / "decks"
 # Serializes read-modify-write on the same deck during ingestion.
 _lock = asyncio.Lock()
 
+# Ids deleted while this process runs. Ingestion is a background task in this
+# same process and keeps saving its deck as it goes, so without this a deck
+# deleted while it is still parsing is written straight back by the next save.
+_deleted: set[str] = set()
+
+
+class DeckDeleted(Exception):
+    """Raised by ``save`` for a deck that was deleted while it was being built."""
+
+
+def was_deleted(deck_id: str) -> bool:
+    """Whether ``deck_id`` was deleted since this process started."""
+    return deck_id in _deleted
+
 
 def _path(deck_id: str) -> Path:
     return DECKS_DIR / f"{deck_id}.json"
@@ -53,11 +67,17 @@ def init() -> None:
 
 
 async def save(deck: Deck) -> None:
-    """Write a deck, atomically enough that a crash cannot leave a half file."""
+    """Write a deck, atomically enough that a crash cannot leave a half file.
+
+    Raises:
+        DeckDeleted: The deck was deleted. Nothing is written.
+    """
     if not _safe_id(deck.id):
         raise ValueError(f"Unsafe deck id: {deck.id!r}")
 
     async with _lock:
+        if deck.id in _deleted:
+            raise DeckDeleted(deck.id)
         DECKS_DIR.mkdir(parents=True, exist_ok=True)
         target = _path(deck.id)
         tmp = target.with_suffix(".json.tmp")
@@ -108,14 +128,29 @@ def delete(deck_id: str) -> bool:
     if not path.is_file():
         return False
 
+    # Recorded first, so an ingest still running for this deck stops at its
+    # next save instead of writing the file back.
+    _deleted.add(deck_id)
     path.unlink()
-
-    # Slide images live in a sibling directory; take them with it.
-    images = image_dir(deck_id)
-    if images.is_dir():
-        for png in images.glob("slide-*.png"):
-            png.unlink()
-        images.rmdir()
+    remove_images(deck_id)
 
     logger.info(f"Deleted deck {deck_id}")
     return True
+
+
+def remove_images(deck_id: str) -> None:
+    """Remove a deck's rendered slide images and their directory.
+
+    A page may still be rendering into the directory while a deck is deleted
+    mid-ingest. Then the directory is left for the ingest to remove when it
+    stops, rather than failing the delete.
+    """
+    images = image_dir(deck_id)
+    if not images.is_dir():
+        return
+    try:
+        for png in images.glob("slide-*.png"):
+            png.unlink(missing_ok=True)
+        images.rmdir()
+    except OSError as exc:
+        logger.warning(f"Could not remove image directory for deck {deck_id}: {exc}")
