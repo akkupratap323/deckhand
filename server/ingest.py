@@ -224,11 +224,25 @@ async def ingest_pdf(deck: Deck, pdf_bytes: bytes, *, is_pptx: bool = False) -> 
     happening rather than an indeterminate spinner. Never raises: a failure is
     recorded on the deck as ``status="failed"`` so the UI can show why.
 
+    If the deck is deleted while this runs, it stops at its next save, without
+    narrating the rest of the slides or writing the deck back.
+
     Args:
         deck: A deck already saved with ``status="processing"``.
         pdf_bytes: The uploaded file. PDF, or PowerPoint when ``is_pptx``.
         is_pptx: Convert from PowerPoint first. See ``convert.py``.
     """
+    try:
+        await _ingest(deck, pdf_bytes, is_pptx=is_pptx)
+    except store.DeckDeleted:
+        # The failure handlers in _ingest save too, so this also lands here.
+        # A page that finished rendering while the delete ran is left behind.
+        store.remove_images(deck.id)
+        logger.info(f"Deck {deck.id} was deleted during ingestion; stopped")
+
+
+async def _ingest(deck: Deck, pdf_bytes: bytes, *, is_pptx: bool) -> None:
+    """The work behind :func:`ingest_pdf`. Raises ``store.DeckDeleted``."""
 
     async def set_phase(phase: IngestPhase) -> None:
         deck.phase = phase
@@ -289,6 +303,9 @@ async def ingest_pdf(deck: Deck, pdf_bytes: bytes, *, is_pptx: bool = False) -> 
             nonlocal done
             text, image = pages[index]
             async with semaphore:
+                # Slides still queued here would each cost a model call.
+                if store.was_deleted(deck.id):
+                    raise store.DeckDeleted(deck.id)
                 slide = await _narrate_one(
                     model,
                     text=text,
