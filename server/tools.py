@@ -53,6 +53,28 @@ def _deck(params: FunctionCallParams) -> Deck:
     return _resources(params).deck
 
 
+def _whole_number(value: Any) -> int | None:
+    """The model's number argument as an int, or None if it is not a whole number.
+
+    Pipecat hands direct functions the model's JSON arguments as they came, so
+    the schema's ``int`` is a request, not a guarantee: a model can send ``"3"``
+    or ``3.0``. Those are read as 3. Anything else (``true``, ``"three"``,
+    ``2.5``, ``null``) is None, so the tool can answer with an error instead of
+    raising, which would leave the model with no tool result at all.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdecimal():
+            return int(text)
+    return None
+
+
 async def _go(params: FunctionCallParams, slide_number: int, reason: str) -> dict[str, Any]:
     """Move to a slide, push the change, and return the slide as the tool result.
 
@@ -111,7 +133,20 @@ async def goto_slide(params: FunctionCallParams, slide_number: int, reason: str)
             something the audience asked, "navigation" when they explicitly asked
             to move, or "presenting" for the normal forward flow of the talk.
     """
-    await params.result_callback(await _go(params, slide_number, reason))
+    number = _whole_number(slide_number)
+    if number is None:
+        logger.warning(f"Rejected slide number {slide_number!r}")
+        await params.result_callback(
+            {
+                "error": (
+                    f"slide_number must be a whole number, got {slide_number!r}. "
+                    f"The deck has slides 1 to {_deck(params).slide_count}."
+                ),
+                "current_slide": _state(params).current_slide_number,
+            }
+        )
+        return
+    await params.result_callback(await _go(params, number, reason))
 
 
 async def next_slide(params: FunctionCallParams):
@@ -182,7 +217,8 @@ async def highlight_bullet(params: FunctionCallParams, bullet_index: int):
     slide = _deck(params).get_slide(state.current_slide_number)
     assert slide is not None
 
-    if not 0 <= bullet_index < len(slide.bullets):
+    index = _whole_number(bullet_index)
+    if index is None or not 0 <= index < len(slide.bullets):
         await params.result_callback(
             {
                 "error": (
@@ -192,6 +228,7 @@ async def highlight_bullet(params: FunctionCallParams, bullet_index: int):
             }
         )
         return
+    bullet_index = index
 
     state.highlighted_bullet = bullet_index
     await _emit(

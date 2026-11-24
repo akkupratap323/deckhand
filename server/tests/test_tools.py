@@ -110,6 +110,31 @@ async def test_out_of_range_slide_is_rejected_without_moving(h: Harness):
     assert not h.emitted, "a rejected navigation must not push a slide change"
 
 
+@pytest.mark.parametrize("sent", ["4", " 4 ", 4.0])
+async def test_goto_slide_reads_a_whole_number_sent_as_text_or_float(h: Harness, sent):
+    """Pipecat passes the model's JSON as is; "4" or 4.0 still means slide 4."""
+    await tools.goto_slide(h.params(), sent, "navigation")
+
+    assert h.state.current_slide_number == 4
+    assert h.last_emit["payload"]["slide"] == 4
+    assert h.last_result["slide_number"] == 4
+
+
+@pytest.mark.parametrize("sent", [None, True, "four", "", 2.5, "2.5", [3], float("nan")])
+async def test_goto_slide_answers_a_non_number_with_an_error(h: Harness, sent):
+    """A bad argument gets a tool result, not an exception the model never sees."""
+    await tools.goto_slide(h.params(), 2, "navigation")
+    h.emitted.clear()
+
+    await tools.goto_slide(h.params(), sent, "navigation")
+
+    assert "whole number" in h.last_result["error"]
+    assert "1 to 6" in h.last_result["error"]
+    assert h.last_result["current_slide"] == 2
+    assert h.state.current_slide_number == 2
+    assert not h.emitted
+
+
 async def test_next_clamps_at_end_of_deck(h: Harness):
     await tools.goto_slide(h.params(), 6, "presenting")
     await tools.next_slide(h.params())
@@ -149,6 +174,24 @@ async def test_highlight_out_of_range_is_rejected(h: Harness):
 
     assert "error" in h.last_result
     assert h.state.highlighted_bullet is None
+
+
+@pytest.mark.parametrize("sent", ["2", 2.0])
+async def test_highlight_reads_a_whole_number_sent_as_text_or_float(h: Harness, sent):
+    await tools.highlight_bullet(h.params(), sent)
+
+    assert h.state.highlighted_bullet == 2
+    assert h.last_emit["payload"]["bullet"] == 2
+    assert h.last_result["highlighted"] == h.deck.get_slide(1).bullets[2]
+
+
+@pytest.mark.parametrize("sent", [None, False, "second", 1.5, "-1"])
+async def test_highlight_answers_a_non_index_with_an_error(h: Harness, sent):
+    await tools.highlight_bullet(h.params(), sent)
+
+    assert "valid indexes are 0 to" in h.last_result["error"]
+    assert h.state.highlighted_bullet is None
+    assert not h.emitted
 
 
 async def test_slide_change_clears_stale_highlight(h: Harness):
