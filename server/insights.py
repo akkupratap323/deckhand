@@ -164,11 +164,21 @@ def _coerce(parsed: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError(f"expected a JSON object, got {type(parsed).__name__}")
 
+    def text(value: Any) -> str:
+        # A JSON null is a missing value, not the word "None" on screen.
+        return "" if value is None else " ".join(str(value).split())
+
+    def flag(value: Any) -> bool:
+        # bool("false") is True, so a quoted "false" would count as answered.
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "yes")
+        return bool(value)
+
     def strings(key: str, limit: int = 6) -> list[str]:
         raw = parsed.get(key)
         if not isinstance(raw, list):
             return []
-        out = [" ".join(str(v).split()) for v in raw if str(v).strip()]
+        out = [t for t in (text(v) for v in raw) if t]
         return out[:limit]
 
     exchanges: list[dict[str, Any]] = []
@@ -186,20 +196,20 @@ def _coerce(parsed: Any) -> dict[str, Any]:
             quality = 0
         exchanges.append(
             {
-                "question": " ".join(str(item.get("question", "")).split()),
+                "question": text(item.get("question")),
                 "intent": intent,
-                "intent_note": " ".join(str(item.get("intent_note", "")).split()),
-                "answered": bool(item.get("answered", False)),
-                "grounded": bool(item.get("grounded", False)),
+                "intent_note": text(item.get("intent_note")),
+                "answered": flag(item.get("answered")),
+                "grounded": flag(item.get("grounded")),
                 "quality": max(0, min(5, quality)),
-                "quality_note": " ".join(str(item.get("quality_note", "")).split()),
+                "quality_note": text(item.get("quality_note")),
             }
         )
 
     scored = [e["quality"] for e in exchanges if e["quality"] > 0]
     return {
-        "summary": " ".join(str(parsed.get("summary", "")).split()),
-        "audience_intent": " ".join(str(parsed.get("audience_intent", "")).split()),
+        "summary": text(parsed.get("summary")),
+        "audience_intent": text(parsed.get("audience_intent")),
         "exchanges": exchanges,
         "strengths": strings("strengths"),
         "weaknesses": strings("weaknesses"),
