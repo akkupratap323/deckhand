@@ -115,6 +115,63 @@ def test_missing_fields_become_empty_not_errors():
     assert out["recommendations"] == []
 
 
+def test_null_fields_become_empty_not_the_word_none():
+    """A JSON null is a missing value; str(None) would put "None" on screen."""
+    out = _coerce(
+        {
+            "summary": None,
+            "audience_intent": None,
+            "exchanges": [
+                {
+                    "question": None,
+                    "intent": None,
+                    "intent_note": None,
+                    "quality_note": None,
+                }
+            ],
+            "strengths": [None, "stayed grounded"],
+            "deck_gaps": [None],
+        }
+    )
+    assert out["summary"] == ""
+    assert out["audience_intent"] == ""
+    ex = out["exchanges"][0]
+    assert ex["question"] == ""
+    assert ex["intent"] == "unclassified"
+    assert ex["intent_note"] == ""
+    assert ex["quality_note"] == ""
+    assert out["strengths"] == ["stayed grounded"]
+    assert out["deck_gaps"] == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        ("true", True),
+        (" True ", True),
+        ("yes", True),
+        ("false", False),
+        ("False", False),
+        ("no", False),
+        ("", False),
+        (1, True),
+        (0, False),
+        (None, False),
+        ([], False),
+    ],
+)
+def test_answered_and_grounded_read_quoted_booleans_as_written(value, expected):
+    """bool("false") is True, which would count a dodge as answered."""
+    out = _coerce({"exchanges": [{"answered": value, "grounded": value, "quality": 3}]})
+    ex = out["exchanges"][0]
+    assert ex["answered"] is expected
+    assert ex["grounded"] is expected
+    assert out["scores"]["answered"] == int(expected)
+    assert out["scores"]["grounded"] == int(expected)
+
+
 def test_non_object_reply_is_rejected():
     with pytest.raises(ValueError):
         _coerce(["not", "an", "object"])
